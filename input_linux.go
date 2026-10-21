@@ -8,12 +8,53 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
+const (
+	KDSETMODE   = 0x4B3A
+	KD_TEXT     = 0x00
+	KD_GRAPHICS = 0x01
+)
+
+func HideConsoleCursor() {
+	// Try hiding blinking console cursor via VT escape sequence or switching TTY to graphics mode
+	os.Stdout.WriteString("\033[?25l") // Hide cursor escape sequence
+
+	// Try setting tty to graphics mode KD_GRAPHICS via ioctl
+	for _, ttyPath := range []string{"/dev/tty0", "/dev/tty", "/dev/tty1", "/dev/console"} {
+		f, err := os.OpenFile(ttyPath, os.O_RDWR, 0)
+		if err == nil {
+			unix.Syscall(unix.SYS_IOCTL, f.Fd(), uintptr(KDSETMODE), uintptr(KD_GRAPHICS))
+			f.Close()
+			break
+		}
+	}
+}
+
+func RestoreConsoleCursor() {
+	os.Stdout.WriteString("\033[?25h") // Show cursor escape sequence
+
+	for _, ttyPath := range []string{"/dev/tty0", "/dev/tty", "/dev/tty1", "/dev/console"} {
+		f, err := os.OpenFile(ttyPath, os.O_RDWR, 0)
+		if err == nil {
+			unix.Syscall(unix.SYS_IOCTL, f.Fd(), uintptr(KDSETMODE), uintptr(KD_TEXT))
+			f.Close()
+			break
+		}
+	}
+}
+
 func (is *InputSystem) Start() {
+	// Scan /dev/input/event* and /dev/input/mice
 	filepath.Walk("/dev/input", func(path string, info fs.FileInfo, err error) error {
 		if err == nil && !info.IsDir() {
-			go is.readLoop(path)
+			if filepath.Base(path) == "mice" || filepath.Base(path) == "mouse0" {
+				go is.readMousePs2Loop(path)
+			} else if filepath.HasPrefix(filepath.Base(path), "event") {
+				go is.readEvdevLoop(path)
+			}
 		}
 		return nil
 	})
@@ -23,14 +64,136 @@ func (is *InputSystem) Stop() {
 	close(is.stopCh)
 }
 
-func (is *InputSystem) readLoop(devicePath string) {
+func (is *InputSystem) readMousePs2Loop(devicePath string) {
 	file, err := os.Open(devicePath)
 	if err != nil {
 		return
 	}
 	defer file.Close()
 
-	// 24 bytes buffer for Linux input_event struct (timeval + uint16 type + uint16 code + int32 value)
+	buf := make([]byte, 3)
+
+	for {
+		select {
+		case <-is.stopCh:
+			return
+		default:
+		}
+
+		n, err := file.Read(buf)
+		if err != nil || n < 3 {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		b0 := buf[0]
+		dx := int(int8(buf[1]))
+		dy := int(int8(buf[2]))
+
+		is.mu.Lock()
+		is.mouseX += dx
+		is.mouseY -= dy // PS/2 y is inverted relative to screen coordinates
+		if is.mouseX < 0 {
+			is.mouseX = 0
+		}
+		if is.mouseX >= is.screenW {
+			is.mouseX = is.screenW - 1
+		}
+		if is.mouseY < 0 {
+			is.mouseY = 0
+		}
+		if is.mouseY >= is.screenH {
+			is.mouseY = is.screenH - 1
+		}
+
+		leftPressed := (b0 & 0x01) != 0
+		rightPressed := (b0 & 0x02) != 0
+
+		if leftPressed && !is.btnLeft {
+			is.btnLeft = true
+			nowMs := time.Now().UnixNano() / 1e6
+			isDbl := (nowMs-is.lastClickMs < 350) && (abs(is.mouseX-is.lastClickX) < 5) && (abs(is.mouseY-is.lastClickY) < 5)
+			is.lastClickMs = nowMs
+			is.lastClickX = is.mouseX
+			is.lastClickY = is.mouseY
+
+			evtType := EventMouseDown
+			if isDbl {
+				evtType = EventMouseDoubleClick
+			}
+
+			is.sendEvent(Event{
+				Type:        evtType,
+				MouseX:      is.mouseX,
+				MouseY:      is.mouseY,
+				MouseButton: MouseLeft,
+				Ctrl:        is.ctrl,
+				Shift:       is.shift,
+				Alt:         is.alt,
+				Super:       is.super,
+			})
+		} else if !leftPressed && is.btnLeft {
+			is.btnLeft = false
+			is.sendEvent(Event{
+				Type:        EventMouseUp,
+				MouseX:      is.mouseX,
+				MouseY:      is.mouseY,
+				MouseButton: MouseLeft,
+				Ctrl:        is.ctrl,
+				Shift:       is.shift,
+				Alt:         is.alt,
+				Super:       is.super,
+			})
+		}
+
+		if rightPressed && !is.btnRight {
+			is.btnRight = true
+			is.sendEvent(Event{
+				Type:        EventMouseDown,
+				MouseX:      is.mouseX,
+				MouseY:      is.mouseY,
+				MouseButton: MouseRight,
+				Ctrl:        is.ctrl,
+				Shift:       is.shift,
+				Alt:         is.alt,
+				Super:       is.super,
+			})
+		} else if !rightPressed && is.btnRight {
+			is.btnRight = false
+			is.sendEvent(Event{
+				Type:        EventMouseUp,
+				MouseX:      is.mouseX,
+				MouseY:      is.mouseY,
+				MouseButton: MouseRight,
+				Ctrl:        is.ctrl,
+				Shift:       is.shift,
+				Alt:         is.alt,
+				Super:       is.super,
+			})
+		}
+
+		if dx != 0 || dy != 0 {
+			is.sendEvent(Event{
+				Type:   EventMouseMove,
+				MouseX: is.mouseX,
+				MouseY: is.mouseY,
+				Ctrl:   is.ctrl,
+				Shift:  is.shift,
+				Alt:    is.alt,
+				Super:  is.super,
+			})
+		}
+		is.mu.Unlock()
+	}
+}
+
+func (is *InputSystem) readEvdevLoop(devicePath string) {
+	file, err := os.Open(devicePath)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
 	buf := make([]byte, 24)
 
 	for {
@@ -42,10 +205,11 @@ func (is *InputSystem) readLoop(devicePath string) {
 
 		n, err := file.Read(buf)
 		if err != nil || n < 16 {
-			// Exit loop cleanly if read fails or EOF is reached
-			return
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
 
+		// Check if struct input_event is 24 bytes (64-bit timeval) or 16 bytes (32-bit timeval)
 		var evType, evCode uint16
 		var evValue int32
 
@@ -53,7 +217,7 @@ func (is *InputSystem) readLoop(devicePath string) {
 			evType = binary.LittleEndian.Uint16(buf[16:18])
 			evCode = binary.LittleEndian.Uint16(buf[18:20])
 			evValue = int32(binary.LittleEndian.Uint32(buf[20:24]))
-		} else if n >= 16 { // 32-bit architecture timeval (8 bytes)
+		} else if n >= 16 {
 			evType = binary.LittleEndian.Uint16(buf[8:10])
 			evCode = binary.LittleEndian.Uint16(buf[10:12])
 			evValue = int32(binary.LittleEndian.Uint32(buf[12:16]))

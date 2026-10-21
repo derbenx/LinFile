@@ -27,6 +27,10 @@ func main() {
 
 	fmt.Printf("Framebuffer opened successfully: %dx%d\n", fb.Width(), fb.Height())
 
+	// Hide console text cursor and switch TTY graphics mode if supported
+	HideConsoleCursor()
+	defer RestoreConsoleCursor()
+
 	// Initialize Input System
 	inputSystem := NewInputSystem(fb.Width(), fb.Height())
 	inputSystem.Start()
