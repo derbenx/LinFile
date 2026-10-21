@@ -221,18 +221,79 @@ func (wm *WindowManager) HandleEvent(e Event) {
 	}
 
 	// Global Shortcuts
-	if e.Super && e.Type == EventKeyDown {
-		switch e.Key {
-		case KEY_E:
-			wm.OpenFileManagerWindow(".")
+	if e.Type == EventKeyDown {
+		// F1 opens Help Window
+		if e.Key == KEY_F1 {
+			wm.OpenHelpWindow()
 			return
-		case KEY_K:
+		}
+
+		// Alt+F4 closes active window
+		if e.Alt && e.Key == KEY_F4 {
 			if active := wm.ActiveWindow(); active != nil {
 				wm.RemoveWindow(active.ID())
 			}
 			return
-		case KEY_Q:
+		}
+
+		// Ctrl+Alt+Q or Super+Q -> Prompt / Quit
+		if (e.Ctrl && e.Alt && e.Key == KEY_Q) || (e.Super && e.Key == KEY_Q) {
 			panic("QUIT")
+		}
+
+		// Super+E or Ctrl+Alt+E -> New file manager window
+		if (e.Super && e.Key == KEY_E) || (e.Ctrl && e.Alt && e.Key == KEY_E) {
+			wm.OpenFileManagerWindow(".")
+			return
+		}
+
+		// Super+K or Ctrl+Alt+K -> Close window
+		if (e.Super && e.Key == KEY_K) || (e.Ctrl && e.Alt && e.Key == KEY_K) {
+			if active := wm.ActiveWindow(); active != nil {
+				wm.RemoveWindow(active.ID())
+			}
+			return
+		}
+
+		// Ctrl+Alt+Arrows -> Snap active window to sides/halves
+		if e.Ctrl && e.Alt {
+			if active := wm.ActiveWindow(); active != nil {
+				switch e.Key {
+				case KEY_LEFT:
+					wm.SnapWindow(active, "left")
+					return
+				case KEY_RIGHT:
+					wm.SnapWindow(active, "right")
+					return
+				case KEY_UP:
+					wm.SnapWindow(active, "top")
+					return
+				case KEY_DOWN:
+					wm.SnapWindow(active, "bottom")
+					return
+				}
+			}
+		}
+
+		// Ctrl+Shift+Arrows -> Nudge / Slide active window 20px
+		if e.Ctrl && e.Shift {
+			if active := wm.ActiveWindow(); active != nil {
+				wx, wy, ww, wh := active.Bounds()
+				switch e.Key {
+				case KEY_LEFT:
+					active.SetBounds(wx-20, wy, ww, wh)
+					return
+				case KEY_RIGHT:
+					active.SetBounds(wx+20, wy, ww, wh)
+					return
+				case KEY_UP:
+					active.SetBounds(wx, wy-20, ww, wh)
+					return
+				case KEY_DOWN:
+					active.SetBounds(wx, wy+20, ww, wh)
+					return
+				}
+			}
 		}
 	}
 

@@ -293,6 +293,39 @@ func (fm *FileManagerWindow) HandleEvent(e Event) bool {
 				}
 			}
 			return true
+		case KEY_HOME:
+			fm.focusedIdx = 0
+			fm.scrollOff = 0
+			return true
+		case KEY_END:
+			if len(fm.items) > 0 {
+				fm.focusedIdx = len(fm.items) - 1
+				maxVisible := (fm.h - 80) / 18
+				if fm.focusedIdx >= maxVisible {
+					fm.scrollOff = fm.focusedIdx - maxVisible + 1
+				}
+			}
+			return true
+		case KEY_PAGEUP:
+			maxVisible := (fm.h - 80) / 18
+			fm.focusedIdx -= maxVisible
+			if fm.focusedIdx < 0 {
+				fm.focusedIdx = 0
+			}
+			if fm.focusedIdx < fm.scrollOff {
+				fm.scrollOff = fm.focusedIdx
+			}
+			return true
+		case KEY_PAGEDOWN:
+			maxVisible := (fm.h - 80) / 18
+			fm.focusedIdx += maxVisible
+			if fm.focusedIdx >= len(fm.items) {
+				fm.focusedIdx = len(fm.items) - 1
+			}
+			if fm.focusedIdx >= fm.scrollOff+maxVisible {
+				fm.scrollOff = fm.focusedIdx - maxVisible + 1
+			}
+			return true
 		case KEY_ENTER:
 			if fm.focusedIdx >= 0 && fm.focusedIdx < len(fm.items) {
 				item := fm.items[fm.focusedIdx]

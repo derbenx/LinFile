@@ -134,6 +134,38 @@ func (te *TextEditorWindow) HandleEvent(e Event) bool {
 				te.cursorCol = 0
 			}
 			return true
+		case KEY_HOME:
+			te.cursorCol = 0
+			return true
+		case KEY_END:
+			te.cursorCol = len(te.lines[te.cursorRow])
+			return true
+		case KEY_PAGEUP:
+			maxVisible := (te.h - 65) / 18
+			te.cursorRow -= maxVisible
+			if te.cursorRow < 0 {
+				te.cursorRow = 0
+			}
+			if te.cursorCol > len(te.lines[te.cursorRow]) {
+				te.cursorCol = len(te.lines[te.cursorRow])
+			}
+			if te.cursorRow < te.scrollRow {
+				te.scrollRow = te.cursorRow
+			}
+			return true
+		case KEY_PAGEDOWN:
+			maxVisible := (te.h - 65) / 18
+			te.cursorRow += maxVisible
+			if te.cursorRow >= len(te.lines) {
+				te.cursorRow = len(te.lines) - 1
+			}
+			if te.cursorCol > len(te.lines[te.cursorRow]) {
+				te.cursorCol = len(te.lines[te.cursorRow])
+			}
+			if te.cursorRow >= te.scrollRow+maxVisible {
+				te.scrollRow = te.cursorRow - maxVisible + 1
+			}
+			return true
 		case KEY_ENTER:
 			currLine := te.lines[te.cursorRow]
 			left := currLine[:te.cursorCol]
