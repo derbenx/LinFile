@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -18,59 +20,59 @@ const (
 )
 
 type FbBitfield struct {
-	Offset    uint32
-	Length    uint32
-	MsbRight  uint32
+	Offset   uint32
+	Length   uint32
+	MsbRight uint32
 }
 
 type FbVarScreeninfo struct {
-	Xres           uint32
-	Yres           uint32
-	XresVirtual    uint32
-	YresVirtual    uint32
-	Xoffset        uint32
-	Yoffset        uint32
-	BitsPerPixel   uint32
-	Grayscale      uint32
-	Red            FbBitfield
-	Green          FbBitfield
-	Blue           FbBitfield
-	Transp         FbBitfield
-	Nonstd         uint32
-	Activate       uint32
-	Height         uint32
-	Width          uint32
-	AccelFlags     uint32
-	Pixclock       uint32
-	LeftMargin     uint32
-	RightMargin    uint32
-	UpperMargin    uint32
-	LowerMargin    uint32
-	HsyncLen       uint32
-	VsyncLen       uint32
-	Sync           uint32
-	Vmode          uint32
-	Rotate         uint32
-	Colorspace     uint32
-	Reserved       [4]uint32
+	Xres         uint32
+	Yres         uint32
+	XresVirtual  uint32
+	YresVirtual  uint32
+	Xoffset      uint32
+	Yoffset      uint32
+	BitsPerPixel uint32
+	Grayscale    uint32
+	Red          FbBitfield
+	Green        FbBitfield
+	Blue         FbBitfield
+	Transp       FbBitfield
+	Nonstd       uint32
+	Activate     uint32
+	Height       uint32
+	Width        uint32
+	AccelFlags   uint32
+	Pixclock     uint32
+	LeftMargin   uint32
+	RightMargin  uint32
+	UpperMargin  uint32
+	LowerMargin  uint32
+	HsyncLen     uint32
+	VsyncLen     uint32
+	Sync         uint32
+	Vmode        uint32
+	Rotate       uint32
+	Colorspace   uint32
+	Reserved     [4]uint32
 }
 
 type FbFixScreeninfo struct {
-	Id          [16]byte
-	SmemStart   uintptr
-	SmemLen     uint32
-	Type        uint32
-	TypeAux     uint32
-	Visual      uint32
-	Xpanstep    uint16
-	Ypanstep    uint16
-	Ywrapstep   uint16
-	LineLength  uint32
-	MmioStart   uintptr
-	MmioLen     uint32
-	Accel       uint32
+	Id           [16]byte
+	SmemStart    uintptr
+	SmemLen      uint32
+	Type         uint32
+	TypeAux      uint32
+	Visual       uint32
+	Xpanstep     uint16
+	Ypanstep     uint16
+	Ywrapstep    uint16
+	LineLength   uint32
+	MmioStart    uintptr
+	MmioLen      uint32
+	Accel        uint32
 	Capabilities uint16
-	Reserved    [2]uint16
+	Reserved     [2]uint16
 }
 
 type Framebuffer interface {

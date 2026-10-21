@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -6,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -111,13 +112,6 @@ const (
 	KEY_RIGHTMETA = 126
 )
 
-type InputEvent struct {
-	Time  syscall.Timeval
-	Type  uint16
-	Code  uint16
-	Value int32
-}
-
 type EventType int
 
 const (
@@ -213,9 +207,8 @@ func (is *InputSystem) readLoop(devicePath string) {
 	}
 	defer file.Close()
 
-	var ev InputEvent
-	evSize := int(binary.Size(ev))
-	buf := make([]byte, evSize)
+	// 24 bytes buffer for Linux input_event struct (timeval + uint16 type + uint16 code + int32 value)
+	buf := make([]byte, 24)
 
 	for {
 		select {
@@ -225,30 +218,37 @@ func (is *InputSystem) readLoop(devicePath string) {
 		}
 
 		n, err := file.Read(buf)
-		if err != nil || n < evSize {
+		if err != nil || n < 16 {
 			// Exit loop cleanly if read fails or EOF is reached
 			return
 		}
 
-		ev.Time.Sec = int64(binary.LittleEndian.Uint64(buf[0:8]))
-		ev.Time.Usec = int64(binary.LittleEndian.Uint64(buf[8:16]))
-		ev.Type = binary.LittleEndian.Uint16(buf[16:18])
-		ev.Code = binary.LittleEndian.Uint16(buf[18:20])
-		ev.Value = int32(binary.LittleEndian.Uint32(buf[20:24]))
+		var evType, evCode uint16
+		var evValue int32
 
-		is.processEvent(ev)
+		if n >= 24 {
+			evType = binary.LittleEndian.Uint16(buf[16:18])
+			evCode = binary.LittleEndian.Uint16(buf[18:20])
+			evValue = int32(binary.LittleEndian.Uint32(buf[20:24]))
+		} else if n >= 16 { // 32-bit architecture timeval (8 bytes)
+			evType = binary.LittleEndian.Uint16(buf[8:10])
+			evCode = binary.LittleEndian.Uint16(buf[10:12])
+			evValue = int32(binary.LittleEndian.Uint32(buf[12:16]))
+		}
+
+		is.processEvent(evType, evCode, evValue)
 	}
 }
 
-func (is *InputSystem) processEvent(ev InputEvent) {
+func (is *InputSystem) processEvent(evType, evCode uint16, evValue int32) {
 	is.mu.Lock()
 	defer is.mu.Unlock()
 
-	switch ev.Type {
+	switch evType {
 	case EV_REL:
-		switch ev.Code {
+		switch evCode {
 		case REL_X:
-			is.mouseX += int(ev.Value)
+			is.mouseX += int(evValue)
 			if is.mouseX < 0 {
 				is.mouseX = 0
 			}
@@ -265,7 +265,7 @@ func (is *InputSystem) processEvent(ev InputEvent) {
 				Super:  is.super,
 			})
 		case REL_Y:
-			is.mouseY += int(ev.Value)
+			is.mouseY += int(evValue)
 			if is.mouseY < 0 {
 				is.mouseY = 0
 			}
@@ -284,8 +284,8 @@ func (is *InputSystem) processEvent(ev InputEvent) {
 		}
 
 	case EV_KEY:
-		code := ev.Code
-		val := ev.Value
+		code := evCode
+		val := evValue
 
 		if code == BTN_LEFT || code == BTN_TOUCH {
 			if val == 1 { // Down
