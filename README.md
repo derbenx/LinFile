@@ -17,3 +17,4 @@ arrows - navigation
 alt-tab - jump between windows, show text list using prev/current folder
 backspace - up folder
 pgup/pgdn/home/end - navigation as per key
+ctrl+drag window: left side, fit left half of screen. Same with right. Dragged to corner, fit window to 1/4 the screen in that corner position. Bottom/top, similar to left and right.. only top/bottom.
