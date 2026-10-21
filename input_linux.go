@@ -7,175 +7,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 )
-
-// Linux Evdev constants
-const (
-	EV_SYN     = 0x00
-	EV_KEY     = 0x01
-	EV_REL     = 0x02
-	EV_ABS     = 0x03
-	REL_X      = 0x00
-	REL_Y      = 0x01
-	BTN_LEFT   = 0x110
-	BTN_RIGHT  = 0x111
-	BTN_MIDDLE = 0x112
-	BTN_TOUCH  = 0x14a
-)
-
-// Keycodes
-const (
-	KEY_ESC        = 1
-	KEY_1          = 2
-	KEY_2          = 3
-	KEY_3          = 4
-	KEY_4          = 5
-	KEY_5          = 6
-	KEY_6          = 7
-	KEY_7          = 8
-	KEY_8          = 9
-	KEY_9          = 10
-	KEY_0          = 11
-	KEY_MINUS      = 12
-	KEY_EQUAL      = 13
-	KEY_BACKSPACE  = 14
-	KEY_TAB        = 15
-	KEY_Q          = 16
-	KEY_W          = 17
-	KEY_E          = 18
-	KEY_R          = 19
-	KEY_T          = 20
-	KEY_Y          = 21
-	KEY_U          = 22
-	KEY_I          = 23
-	KEY_O          = 24
-	KEY_P          = 25
-	KEY_LEFTBRACE  = 26
-	KEY_RIGHTBRACE = 27
-	KEY_ENTER      = 28
-	KEY_LEFTCTRL   = 29
-	KEY_A          = 30
-	KEY_S          = 31
-	KEY_D          = 32
-	KEY_F          = 33
-	KEY_G          = 34
-	KEY_H          = 35
-	KEY_J          = 36
-	KEY_K          = 37
-	KEY_L          = 38
-	KEY_SEMICOLON  = 39
-	KEY_APOSTROPHE = 40
-	KEY_GRAVE      = 41
-	KEY_LEFTSHIFT  = 42
-	KEY_BACKSLASH  = 43
-	KEY_Z          = 44
-	KEY_X          = 45
-	KEY_C          = 46
-	KEY_V          = 47
-	KEY_B          = 48
-	KEY_N          = 49
-	KEY_M          = 50
-	KEY_COMMA      = 51
-	KEY_DOT        = 52
-	KEY_SLASH      = 53
-	KEY_RIGHTSHIFT = 54
-	KEY_KPASTERISK = 55
-	KEY_LEFTALT    = 56
-	KEY_SPACE      = 57
-	KEY_CAPSLOCK   = 58
-	KEY_F1         = 59
-	KEY_F2         = 60
-	KEY_F3         = 61
-	KEY_F4         = 62
-	KEY_F5         = 63
-	KEY_F6         = 64
-	KEY_F7         = 65
-	KEY_F8         = 66
-	KEY_F9         = 67
-	KEY_F10        = 68
-
-	KEY_RIGHTCTRL = 97
-	KEY_KPSLASH   = 98
-	KEY_RIGHTALT  = 100
-	KEY_HOME      = 102
-	KEY_UP        = 103
-	KEY_PAGEUP    = 104
-	KEY_LEFT      = 105
-	KEY_RIGHT     = 106
-	KEY_END       = 107
-	KEY_DOWN      = 108
-	KEY_PAGEDOWN  = 109
-	KEY_DELETE    = 111
-	KEY_LEFTMETA  = 125
-	KEY_RIGHTMETA = 126
-)
-
-type EventType int
-
-const (
-	EventMouseMove EventType = iota
-	EventMouseDown
-	EventMouseUp
-	EventMouseDoubleClick
-	EventKeyDown
-	EventKeyUp
-	EventChar
-)
-
-type MouseButton int
-
-const (
-	MouseNone MouseButton = iota
-	MouseLeft
-	MouseRight
-	MouseMiddle
-)
-
-type Event struct {
-	Type        EventType
-	MouseX      int
-	MouseY      int
-	MouseButton MouseButton
-	Key         uint16
-	Char        rune
-	Ctrl        bool
-	Shift       bool
-	Alt         bool
-	Super       bool
-}
-
-type InputSystem struct {
-	events      chan Event
-	mouseX      int
-	mouseY      int
-	screenW     int
-	screenH     int
-	btnLeft     bool
-	btnRight    bool
-	ctrl        bool
-	shift       bool
-	alt         bool
-	super       bool
-	lastClickMs int64
-	lastClickX  int
-	lastClickY  int
-	mu          sync.Mutex
-	stopCh      chan struct{}
-}
-
-func NewInputSystem(screenW, screenH int) *InputSystem {
-	is := &InputSystem{
-		events:  make(chan Event, 256),
-		mouseX:  screenW / 2,
-		mouseY:  screenH / 2,
-		screenW: screenW,
-		screenH: screenH,
-		stopCh:  make(chan struct{}),
-	}
-	return is
-}
 
 func (is *InputSystem) Start() {
 	filepath.Walk("/dev/input", func(path string, info fs.FileInfo, err error) error {
@@ -188,16 +21,6 @@ func (is *InputSystem) Start() {
 
 func (is *InputSystem) Stop() {
 	close(is.stopCh)
-}
-
-func (is *InputSystem) Events() <-chan Event {
-	return is.events
-}
-
-func (is *InputSystem) MousePos() (int, int) {
-	is.mu.Lock()
-	defer is.mu.Unlock()
-	return is.mouseX, is.mouseY
 }
 
 func (is *InputSystem) readLoop(devicePath string) {
@@ -390,20 +213,6 @@ func (is *InputSystem) processEvent(evType, evCode uint16, evValue int32) {
 			})
 		}
 	}
-}
-
-func (is *InputSystem) sendEvent(e Event) {
-	select {
-	case is.events <- e:
-	default:
-	}
-}
-
-func abs(v int) int {
-	if v < 0 {
-		return -v
-	}
-	return v
 }
 
 func keyToRune(code uint16, shift bool) rune {

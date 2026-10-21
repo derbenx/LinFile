@@ -25,7 +25,7 @@ func main() {
 	}
 	defer fb.Close()
 
-	fmt.Printf("Framebuffer opened successfully: %dx%d (%d bpp)\n", fb.Width(), fb.Height(), fb.bpp)
+	fmt.Printf("Framebuffer opened successfully: %dx%d\n", fb.Width(), fb.Height())
 
 	// Initialize Input System
 	inputSystem := NewInputSystem(fb.Width(), fb.Height())
