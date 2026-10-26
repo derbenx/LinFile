@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"golang.org/x/term"
 	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 )
 
 const (
@@ -31,7 +31,6 @@ var oldState *term.State
 func HideConsoleCursor() {
 	os.Stdout.WriteString("\033[?25l") // Hide cursor escape sequence
 
-	// Make TTY stdin raw to capture keys directly if needed
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		oldState, _ = term.MakeRaw(int(os.Stdin.Fd()))
 	}
@@ -64,11 +63,14 @@ func RestoreConsoleCursor() {
 }
 
 func (is *InputSystem) Start() {
-	// 1. Scan /dev/input for evdev and mice
+	// 1. Explicitly open /dev/psaux (Standard Linux PS/2 Mouse node for VirtualBox & baremetal)
+	go is.readMousePs2Loop("/dev/psaux")
+
+	// 2. Scan /dev/input for evdev, mice, and mouseX
 	filepath.Walk("/dev/input", func(path string, info fs.FileInfo, err error) error {
 		if err == nil && !info.IsDir() {
 			base := filepath.Base(path)
-			if base == "mice" || base == "mouse0" {
+			if base == "mice" || filepath.HasPrefix(base, "mouse") {
 				go is.readMousePs2Loop(path)
 			} else if filepath.HasPrefix(base, "event") {
 				go is.readEvdevLoop(path)
@@ -77,7 +79,7 @@ func (is *InputSystem) Start() {
 		return nil
 	})
 
-	// 2. Fallback TTY Stdin reader for keyboard
+	// 3. Fallback TTY Stdin reader for keyboard
 	go is.readStdinLoop()
 }
 
@@ -104,8 +106,8 @@ func (is *InputSystem) readStdinLoop() {
 		for i := 0; i < n; i++ {
 			b := buf[i]
 
-			// Check for Ctrl+C (3) or Ctrl+Q (17) or Esc (27)
-			if b == 3 || b == 17 { // Ctrl+C / Ctrl+Q -> trigger exit/quit
+			// Check for Ctrl+C (3) or Ctrl+Q (17) -> trigger exit
+			if b == 3 || b == 17 {
 				is.sendEvent(Event{Type: EventKeyDown, Key: KEY_Q, Ctrl: true, Super: true})
 			} else if b == 27 { // ESC or arrow sequences
 				if i+2 < n && buf[i+1] == '[' {
@@ -146,7 +148,9 @@ func (is *InputSystem) readMousePs2Loop(devicePath string) {
 	}
 	defer file.Close()
 
-	buf := make([]byte, 3)
+	buf := make([]byte, 1)
+	packet := make([]byte, 3)
+	idx := 0
 
 	for {
 		select {
@@ -156,101 +160,122 @@ func (is *InputSystem) readMousePs2Loop(devicePath string) {
 		}
 
 		n, err := file.Read(buf)
-		if err != nil || n < 3 {
+		if err != nil || n == 0 {
 			time.Sleep(10 * time.Millisecond)
 			continue
 		}
 
-		b0 := buf[0]
-		dx := int(int8(buf[1]))
-		dy := int(int8(buf[2]))
+		b := buf[0]
 
-		is.mu.Lock()
-		is.mouseX += dx
-		is.mouseY -= dy
-		if is.mouseX < 0 { is.mouseX = 0 }
-		if is.mouseX >= is.screenW { is.mouseX = is.screenW - 1 }
-		if is.mouseY < 0 { is.mouseY = 0 }
-		if is.mouseY >= is.screenH { is.mouseY = is.screenH - 1 }
+		// Packet sync check: Byte 0 of PS/2 packet MUST have bit 3 (0x08) set
+		if idx == 0 && (b&0x08) == 0 {
+			continue // Drop out-of-sync byte
+		}
 
-		leftPressed := (b0 & 0x01) != 0
-		rightPressed := (b0 & 0x02) != 0
+		packet[idx] = b
+		idx++
 
-		if leftPressed && !is.btnLeft {
-			is.btnLeft = true
-			nowMs := time.Now().UnixNano() / 1e6
-			isDbl := (nowMs-is.lastClickMs < 350) && (abs(is.mouseX-is.lastClickX) < 5) && (abs(is.mouseY-is.lastClickY) < 5)
-			is.lastClickMs = nowMs
-			is.lastClickX = is.mouseX
-			is.lastClickY = is.mouseY
+		if idx == 3 {
+			idx = 0
+			b0 := packet[0]
+			dx := int(int8(packet[1]))
+			dy := int(int8(packet[2]))
 
-			evtType := EventMouseDown
-			if isDbl {
-				evtType = EventMouseDoubleClick
+			is.mu.Lock()
+			is.mouseX += dx
+			is.mouseY -= dy
+			if is.mouseX < 0 {
+				is.mouseX = 0
+			}
+			if is.mouseX >= is.screenW {
+				is.mouseX = is.screenW - 1
+			}
+			if is.mouseY < 0 {
+				is.mouseY = 0
+			}
+			if is.mouseY >= is.screenH {
+				is.mouseY = is.screenH - 1
 			}
 
-			is.sendEvent(Event{
-				Type:        evtType,
-				MouseX:      is.mouseX,
-				MouseY:      is.mouseY,
-				MouseButton: MouseLeft,
-				Ctrl:        is.ctrl,
-				Shift:       is.shift,
-				Alt:         is.alt,
-				Super:       is.super,
-			})
-		} else if !leftPressed && is.btnLeft {
-			is.btnLeft = false
-			is.sendEvent(Event{
-				Type:        EventMouseUp,
-				MouseX:      is.mouseX,
-				MouseY:      is.mouseY,
-				MouseButton: MouseLeft,
-				Ctrl:        is.ctrl,
-				Shift:       is.shift,
-				Alt:         is.alt,
-				Super:       is.super,
-			})
-		}
+			leftPressed := (b0 & 0x01) != 0
+			rightPressed := (b0 & 0x02) != 0
 
-		if rightPressed && !is.btnRight {
-			is.btnRight = true
-			is.sendEvent(Event{
-				Type:        EventMouseDown,
-				MouseX:      is.mouseX,
-				MouseY:      is.mouseY,
-				MouseButton: MouseRight,
-				Ctrl:        is.ctrl,
-				Shift:       is.shift,
-				Alt:         is.alt,
-				Super:       is.super,
-			})
-		} else if !rightPressed && is.btnRight {
-			is.btnRight = false
-			is.sendEvent(Event{
-				Type:        EventMouseUp,
-				MouseX:      is.mouseX,
-				MouseY:      is.mouseY,
-				MouseButton: MouseRight,
-				Ctrl:        is.ctrl,
-				Shift:       is.shift,
-				Alt:         is.alt,
-				Super:       is.super,
-			})
-		}
+			if leftPressed && !is.btnLeft {
+				is.btnLeft = true
+				nowMs := time.Now().UnixNano() / 1e6
+				isDbl := (nowMs-is.lastClickMs < 350) && (abs(is.mouseX-is.lastClickX) < 5) && (abs(is.mouseY-is.lastClickY) < 5)
+				is.lastClickMs = nowMs
+				is.lastClickX = is.mouseX
+				is.lastClickY = is.mouseY
 
-		if dx != 0 || dy != 0 {
-			is.sendEvent(Event{
-				Type:   EventMouseMove,
-				MouseX: is.mouseX,
-				MouseY: is.mouseY,
-				Ctrl:   is.ctrl,
-				Shift:  is.shift,
-				Alt:    is.alt,
-				Super:  is.super,
-			})
+				evtType := EventMouseDown
+				if isDbl {
+					evtType = EventMouseDoubleClick
+				}
+
+				is.sendEvent(Event{
+					Type:        evtType,
+					MouseX:      is.mouseX,
+					MouseY:      is.mouseY,
+					MouseButton: MouseLeft,
+					Ctrl:        is.ctrl,
+					Shift:       is.shift,
+					Alt:         is.alt,
+					Super:       is.super,
+				})
+			} else if !leftPressed && is.btnLeft {
+				is.btnLeft = false
+				is.sendEvent(Event{
+					Type:        EventMouseUp,
+					MouseX:      is.mouseX,
+					MouseY:      is.mouseY,
+					MouseButton: MouseLeft,
+					Ctrl:        is.ctrl,
+					Shift:       is.shift,
+					Alt:         is.alt,
+					Super:       is.super,
+				})
+			}
+
+			if rightPressed && !is.btnRight {
+				is.btnRight = true
+				is.sendEvent(Event{
+					Type:        EventMouseDown,
+					MouseX:      is.mouseX,
+					MouseY:      is.mouseY,
+					MouseButton: MouseRight,
+					Ctrl:        is.ctrl,
+					Shift:       is.shift,
+					Alt:         is.alt,
+					Super:       is.super,
+				})
+			} else if !rightPressed && is.btnRight {
+				is.btnRight = false
+				is.sendEvent(Event{
+					Type:        EventMouseUp,
+					MouseX:      is.mouseX,
+					MouseY:      is.mouseY,
+					MouseButton: MouseRight,
+					Ctrl:        is.ctrl,
+					Shift:       is.shift,
+					Alt:         is.alt,
+					Super:       is.super,
+				})
+			}
+
+			if dx != 0 || dy != 0 {
+				is.sendEvent(Event{
+					Type:   EventMouseMove,
+					MouseX: is.mouseX,
+					MouseY: is.mouseY,
+					Ctrl:   is.ctrl,
+					Shift:  is.shift,
+					Alt:    is.alt,
+					Super:  is.super,
+				})
+			}
+			is.mu.Unlock()
 		}
-		is.mu.Unlock()
 	}
 }
 
@@ -302,8 +327,12 @@ func (is *InputSystem) processEvent(evType, evCode uint16, evValue int32) {
 		switch evCode {
 		case REL_X:
 			is.mouseX += int(evValue)
-			if is.mouseX < 0 { is.mouseX = 0 }
-			if is.mouseX >= is.screenW { is.mouseX = is.screenW - 1 }
+			if is.mouseX < 0 {
+				is.mouseX = 0
+			}
+			if is.mouseX >= is.screenW {
+				is.mouseX = is.screenW - 1
+			}
 			is.sendEvent(Event{
 				Type:   EventMouseMove,
 				MouseX: is.mouseX,
@@ -315,8 +344,12 @@ func (is *InputSystem) processEvent(evType, evCode uint16, evValue int32) {
 			})
 		case REL_Y:
 			is.mouseY += int(evValue)
-			if is.mouseY < 0 { is.mouseY = 0 }
-			if is.mouseY >= is.screenH { is.mouseY = is.screenH - 1 }
+			if is.mouseY < 0 {
+				is.mouseY = 0
+			}
+			if is.mouseY >= is.screenH {
+				is.mouseY = is.screenH - 1
+			}
 			is.sendEvent(Event{
 				Type:   EventMouseMove,
 				MouseX: is.mouseX,
@@ -331,11 +364,13 @@ func (is *InputSystem) processEvent(evType, evCode uint16, evValue int32) {
 	case EV_ABS: // VirtualBox / Tablet / Touchpad Absolute Mouse Coordinates
 		switch evCode {
 		case ABS_X, ABS_MT_POS_X:
-			if evValue > 0 {
+			if evValue >= 0 {
 				if evValue <= int32(is.screenW) {
 					is.mouseX = int(evValue)
-				} else {
+				} else if evValue <= 32767 {
 					is.mouseX = int(evValue) * is.screenW / 32767
+				} else {
+					is.mouseX = int(evValue) * is.screenW / 65535
 				}
 			}
 			is.sendEvent(Event{
@@ -348,11 +383,13 @@ func (is *InputSystem) processEvent(evType, evCode uint16, evValue int32) {
 				Super:  is.super,
 			})
 		case ABS_Y, ABS_MT_POS_Y:
-			if evValue > 0 {
+			if evValue >= 0 {
 				if evValue <= int32(is.screenH) {
 					is.mouseY = int(evValue)
-				} else {
+				} else if evValue <= 32767 {
 					is.mouseY = int(evValue) * is.screenH / 32767
+				} else {
+					is.mouseY = int(evValue) * is.screenH / 65535
 				}
 			}
 			is.sendEvent(Event{
@@ -477,88 +514,303 @@ func (is *InputSystem) processEvent(evType, evCode uint16, evValue int32) {
 
 func runeToKey(ch rune) uint16 {
 	switch ch {
-	case 'a', 'A': return KEY_A
-	case 'b', 'B': return KEY_B
-	case 'c', 'C': return KEY_C
-	case 'd', 'D': return KEY_D
-	case 'e', 'E': return KEY_E
-	case 'f', 'F': return KEY_F
-	case 'g', 'G': return KEY_G
-	case 'h', 'H': return KEY_H
-	case 'i', 'I': return KEY_I
-	case 'j', 'J': return KEY_J
-	case 'k', 'K': return KEY_K
-	case 'l', 'L': return KEY_L
-	case 'm', 'M': return KEY_M
-	case 'n', 'N': return KEY_N
-	case 'o', 'O': return KEY_O
-	case 'p', 'P': return KEY_P
-	case 'q', 'Q': return KEY_Q
-	case 'r', 'R': return KEY_R
-	case 's', 'S': return KEY_S
-	case 't', 'T': return KEY_T
-	case 'u', 'U': return KEY_U
-	case 'v', 'V': return KEY_V
-	case 'w', 'W': return KEY_W
-	case 'x', 'X': return KEY_X
-	case 'y', 'Y': return KEY_Y
-	case 'z', 'Z': return KEY_Z
+	case 'a', 'A':
+		return KEY_A
+	case 'b', 'B':
+		return KEY_B
+	case 'c', 'C':
+		return KEY_C
+	case 'd', 'D':
+		return KEY_D
+	case 'e', 'E':
+		return KEY_E
+	case 'f', 'F':
+		return KEY_F
+	case 'g', 'G':
+		return KEY_G
+	case 'h', 'H':
+		return KEY_H
+	case 'i', 'I':
+		return KEY_I
+	case 'j', 'J':
+		return KEY_J
+	case 'k', 'K':
+		return KEY_K
+	case 'l', 'L':
+		return KEY_L
+	case 'm', 'M':
+		return KEY_M
+	case 'n', 'N':
+		return KEY_N
+	case 'o', 'O':
+		return KEY_O
+	case 'p', 'P':
+		return KEY_P
+	case 'q', 'Q':
+		return KEY_Q
+	case 'r', 'R':
+		return KEY_R
+	case 's', 'S':
+		return KEY_S
+	case 't', 'T':
+		return KEY_T
+	case 'u', 'U':
+		return KEY_U
+	case 'v', 'V':
+		return KEY_V
+	case 'w', 'W':
+		return KEY_W
+	case 'x', 'X':
+		return KEY_X
+	case 'y', 'Y':
+		return KEY_Y
+	case 'z', 'Z':
+		return KEY_Z
 	}
 	return 0
 }
 
 func keyToRune(code uint16, shift bool) rune {
 	switch code {
-	case KEY_A: if shift { return 'A' }; return 'a'
-	case KEY_B: if shift { return 'B' }; return 'b'
-	case KEY_C: if shift { return 'C' }; return 'c'
-	case KEY_D: if shift { return 'D' }; return 'd'
-	case KEY_E: if shift { return 'E' }; return 'e'
-	case KEY_F: if shift { return 'F' }; return 'f'
-	case KEY_G: if shift { return 'G' }; return 'g'
-	case KEY_H: if shift { return 'H' }; return 'h'
-	case KEY_I: if shift { return 'I' }; return 'i'
-	case KEY_J: if shift { return 'J' }; return 'j'
-	case KEY_K: if shift { return 'K' }; return 'k'
-	case KEY_L: if shift { return 'L' }; return 'l'
-	case KEY_M: if shift { return 'M' }; return 'm'
-	case KEY_N: if shift { return 'N' }; return 'n'
-	case KEY_O: if shift { return 'O' }; return 'o'
-	case KEY_P: if shift { return 'P' }; return 'p'
-	case KEY_Q: if shift { return 'Q' }; return 'q'
-	case KEY_R: if shift { return 'R' }; return 'r'
-	case KEY_S: if shift { return 'S' }; return 's'
-	case KEY_T: if shift { return 'T' }; return 't'
-	case KEY_U: if shift { return 'U' }; return 'u'
-	case KEY_V: if shift { return 'V' }; return 'v'
-	case KEY_W: if shift { return 'W' }; return 'w'
-	case KEY_X: if shift { return 'X' }; return 'x'
-	case KEY_Y: if shift { return 'Y' }; return 'y'
-	case KEY_Z: if shift { return 'Z' }; return 'z'
+	case KEY_A:
+		if shift {
+			return 'A'
+		}
+		return 'a'
+	case KEY_B:
+		if shift {
+			return 'B'
+		}
+		return 'b'
+	case KEY_C:
+		if shift {
+			return 'C'
+		}
+		return 'c'
+	case KEY_D:
+		if shift {
+			return 'D'
+		}
+		return 'd'
+	case KEY_E:
+		if shift {
+			return 'E'
+		}
+		return 'e'
+	case KEY_F:
+		if shift {
+			return 'F'
+		}
+		return 'f'
+	case KEY_G:
+		if shift {
+			return 'G'
+		}
+		return 'g'
+	case KEY_H:
+		if shift {
+			return 'H'
+		}
+		return 'h'
+	case KEY_I:
+		if shift {
+			return 'I'
+		}
+		return 'i'
+	case KEY_J:
+		if shift {
+			return 'J'
+		}
+		return 'j'
+	case KEY_K:
+		if shift {
+			return 'K'
+		}
+		return 'k'
+	case KEY_L:
+		if shift {
+			return 'L'
+		}
+		return 'l'
+	case KEY_M:
+		if shift {
+			return 'M'
+		}
+		return 'm'
+	case KEY_N:
+		if shift {
+			return 'N'
+		}
+		return 'n'
+	case KEY_O:
+		if shift {
+			return 'O'
+		}
+		return 'o'
+	case KEY_P:
+		if shift {
+			return 'P'
+		}
+		return 'p'
+	case KEY_Q:
+		if shift {
+			return 'Q'
+		}
+		return 'q'
+	case KEY_R:
+		if shift {
+			return 'R'
+		}
+		return 'r'
+	case KEY_S:
+		if shift {
+			return 'S'
+		}
+		return 's'
+	case KEY_T:
+		if shift {
+			return 'T'
+		}
+		return 't'
+	case KEY_U:
+		if shift {
+			return 'U'
+		}
+		return 'u'
+	case KEY_V:
+		if shift {
+			return 'V'
+		}
+		return 'v'
+	case KEY_W:
+		if shift {
+			return 'W'
+		}
+		return 'w'
+	case KEY_X:
+		if shift {
+			return 'X'
+		}
+		return 'x'
+	case KEY_Y:
+		if shift {
+			return 'Y'
+		}
+		return 'y'
+	case KEY_Z:
+		if shift {
+			return 'Z'
+		}
+		return 'z'
 
-	case KEY_1: if shift { return '!' }; return '1'
-	case KEY_2: if shift { return '@' }; return '2'
-	case KEY_3: if shift { return '#' }; return '3'
-	case KEY_4: if shift { return '$' }; return '4'
-	case KEY_5: if shift { return '%' }; return '5'
-	case KEY_6: if shift { return '^' }; return '6'
-	case KEY_7: if shift { return '&' }; return '7'
-	case KEY_8: if shift { return '*' }; return '8'
-	case KEY_9: if shift { return '(' }; return '9'
-	case KEY_0: if shift { return ')' }; return '0'
+	case KEY_1:
+		if shift {
+			return '!'
+		}
+		return '1'
+	case KEY_2:
+		if shift {
+			return '@'
+		}
+		return '2'
+	case KEY_3:
+		if shift {
+			return '#'
+		}
+		return '3'
+	case KEY_4:
+		if shift {
+			return '$'
+		}
+		return '4'
+	case KEY_5:
+		if shift {
+			return '%'
+		}
+		return '5'
+	case KEY_6:
+		if shift {
+			return '^'
+		}
+		return '6'
+	case KEY_7:
+		if shift {
+			return '&'
+		}
+		return '7'
+	case KEY_8:
+		if shift {
+			return '*'
+		}
+		return '8'
+	case KEY_9:
+		if shift {
+			return '('
+		}
+		return '9'
+	case KEY_0:
+		if shift {
+			return ')'
+		}
+		return '0'
 
-	case KEY_SPACE: return ' '
-	case KEY_MINUS: if shift { return '_' }; return '-'
-	case KEY_EQUAL: if shift { return '+' }; return '='
-	case KEY_LEFTBRACE: if shift { return '{' }; return '['
-	case KEY_RIGHTBRACE: if shift { return '}' }; return ']'
-	case KEY_SEMICOLON: if shift { return ':' }; return ';'
-	case KEY_APOSTROPHE: if shift { return '"' }; return '\''
-	case KEY_GRAVE: if shift { return '~' }; return '`'
-	case KEY_BACKSLASH: if shift { return '|' }; return '\\'
-	case KEY_COMMA: if shift { return '<' }; return ','
-	case KEY_DOT: if shift { return '>' }; return '.'
-	case KEY_SLASH: if shift { return '?' }; return '/'
+	case KEY_SPACE:
+		return ' '
+	case KEY_MINUS:
+		if shift {
+			return '_'
+		}
+		return '-'
+	case KEY_EQUAL:
+		if shift {
+			return '+'
+		}
+		return '='
+	case KEY_LEFTBRACE:
+		if shift {
+			return '{'
+		}
+		return '['
+	case KEY_RIGHTBRACE:
+		if shift {
+			return '}'
+		}
+		return ']'
+	case KEY_SEMICOLON:
+		if shift {
+			return ':'
+		}
+		return ';'
+	case KEY_APOSTROPHE:
+		if shift {
+			return '"'
+		}
+		return '\''
+	case KEY_GRAVE:
+		if shift {
+			return '~'
+		}
+		return '`'
+	case KEY_BACKSLASH:
+		if shift {
+			return '|'
+		}
+		return '\\'
+	case KEY_COMMA:
+		if shift {
+			return '<'
+		}
+		return ','
+	case KEY_DOT:
+		if shift {
+			return '>'
+		}
+		return '.'
+	case KEY_SLASH:
+		if shift {
+			return '?'
+		}
+		return '/'
 	}
 	return 0
 }
